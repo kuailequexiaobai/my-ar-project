@@ -1,98 +1,294 @@
 <!DOCTYPE html>
 <html lang="zh">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebAR 粒子互动系统</title>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.134.0/build/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>WebAR 粒子互动</title>
 
-    <style>
-        body{margin:0;overflow:hidden;background:black;color:white;font-family:sans-serif;}
-        #startBtn{
-            position: fixed;
-            top:0;left:0;width:100vw;height:100vh;
-            background:black;
-            display:flex;
-            justify-content:center;
-            align-items:center;
-            color:white;
-            font-size:28px;
-            z-index:9999;
-        }
-        #output_video{display:none;}
-        #three-container{position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:2;}
-        #video-container{position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:1;}
-    </style>
+<!-- Three.js -->
+<script src="https://unpkg.com/three@0.157.0/build/three.min.js"></script>
+
+<!-- MediaPipe Hands -->
+<script src="https://unpkg.com/@mediapipe/hands/hands.js"></script>
+<script src="https://unpkg.com/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<style>
+body,html{
+  margin:0;
+  padding:0;
+  overflow:hidden;
+  background:#000;
+  touch-action:none;
+}
+#start{
+  position:fixed;
+  inset:0;
+  margin:auto;
+  width:260px;
+  height:80px;
+  border-radius:16px;
+  background:#0ad4ff;
+  border:none;
+  color:#000;
+  font-size:26px;
+  font-weight:bold;
+}
+#video{
+  display:none;
+}
+</style>
 </head>
 <body>
 
-    <!-- iOS 必须点击一次 -->
-    <div id="startBtn">点击开始 AR</div>
+<video id="video" playsinline></video>
+<button id="start">点击开始 AR</button>
 
-    <div id="video-container">
-        <video id="output_video" playsinline autoplay muted></video>
-    </div>
-    <div id="three-container"></div>
+<script>
+const startBtn=document.getElementById("start");
+const video=document.getElementById("video");
 
-    <script>
-        let scene, camera, renderer;
-        let hands, videoElement;
+/* ============ THREE.js 初始化 ============ */
+let scene, camera, renderer;
+let particleCount = 16000;
+let positions, velocities, accelerations;
+let particleSystem, particleGeometry;
+let targetForm = new Array(particleCount).fill(new THREE.Vector3());
+let currentForm = "sphere";
+let lastHandTime = 0;
+let lastPalmSize = 0;
 
-        // ============ Three 初始化 ============
-        function initThree(){
-            scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight,0.1,2000);
-            camera.position.z = 300;
+function initThree(){
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight,0.01,100);
+  camera.position.z = 2.5;
 
-            renderer = new THREE.WebGLRenderer({alpha:true});
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            document.getElementById("three-container").appendChild(renderer.domElement);
+  renderer = new THREE.WebGLRenderer({alpha:true});
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  document.body.appendChild(renderer.domElement);
 
-            animate();
-        }
+  particleGeometry = new THREE.BufferGeometry();
+  positions = new Float32Array(particleCount * 3);
+  velocities = new Float32Array(particleCount * 3);
+  accelerations = new Float32Array(particleCount * 3);
 
-        function animate(){
-            requestAnimationFrame(animate);
-            renderer.render(scene, camera);
-        }
+  for(let i=0;i<particleCount;i++){
+    let x = (Math.random()-0.5)*4;
+    let y = (Math.random()-0.5)*4;
+    let z = (Math.random()-0.5)*4;
+    positions[i*3]=x;
+    positions[i*3+1]=y;
+    positions[i*3+2]=z;
 
-        // ============ MediaPipe 初始化 ============
-        function initMediaPipe(){
-            videoElement = document.getElementById("output_video");
+    velocities[i*3] = 0;
+    velocities[i*3+1] = 0;
+    velocities[i*3+2] = 0;
 
-            hands = new Hands({
-                locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-            });
-            hands.setOptions({
-                maxNumHands: 1,
-                modelComplexity: 1
-            });
+    accelerations[i*3]=0;
+    accelerations[i*3+1]=0;
+    accelerations[i*3+2]=0;
+  }
 
-            const cam = new Camera(videoElement, {
-                width:1280, height:720,
-                onFrame:async()=>{
-                    await hands.send({image:videoElement});
-                }
-            });
-            cam.start();
-        }
+  particleGeometry.setAttribute("position",new THREE.BufferAttribute(positions,3));
 
-        // ============ iPad 必须点击启动摄像头 ============
-        document.getElementById("startBtn").onclick = async function(){
-            this.style.display = "none";
+  let material=new THREE.PointsMaterial({
+    color:0x00ffff,
+    size:0.015,
+    transparent:true,
+    opacity:0.95
+  });
 
-            try{
-                await document.getElementById("output_video").play();
-            }catch(e){
-                console.log("iOS autoplay blocked:", e);
-            }
+  particleSystem=new THREE.Points(particleGeometry,material);
+  scene.add(particleSystem);
 
-            initThree();
-            initMediaPipe();
-        };
-    </script>
+  animate();
+}
+
+/* ============ 粒子物理 + 动画循环 ============ */
+function animate(){
+  requestAnimationFrame(animate);
+  let now = performance.now();
+
+  // 粒子物理更新
+  for(let i=0;i<particleCount;i++){
+    let idx=i*3;
+    // 加速度 → 速度
+    velocities[idx] += accelerations[idx]*0.016;
+    velocities[idx+1] += accelerations[idx+1]*0.016;
+    velocities[idx+2] += accelerations[idx+2]*0.016;
+
+    // 阻尼
+    velocities[idx]*=0.92;
+    velocities[idx+1]*=0.92;
+    velocities[idx+2]*=0.92;
+
+    // 速度 → 位置
+    positions[idx] += velocities[idx]*0.016;
+    positions[idx+1] += velocities[idx+1]*0.016;
+    positions[idx+2] += velocities[idx+2]*0.016;
+
+    // 回到目标形状吸引力
+    let t = targetForm[i];
+    if(t){
+      let dx = t.x - positions[idx];
+      let dy = t.y - positions[idx+1];
+      let dz = t.z - positions[idx+2];
+      accelerations[idx] = dx*0.5;
+      accelerations[idx+1] = dy*0.5;
+      accelerations[idx+2] = dz*0.5;
+    }
+  }
+
+  particleGeometry.attributes.position.needsUpdate=true;
+  renderer.render(scene,camera);
+}
+
+/* ============ 生成不同形状 ============ */
+function shape_sphere(){
+  currentForm="sphere";
+  for(let i=0;i<particleCount;i++){
+    let theta = Math.random()*Math.PI*2;
+    let phi = Math.acos(2*Math.random()-1);
+    let r = 1;
+    targetForm[i] = new THREE.Vector3(
+      r*Math.sin(phi)*Math.cos(theta),
+      r*Math.sin(phi)*Math.sin(theta),
+      r*Math.cos(phi)
+    );
+  }
+}
+
+function shape_ring(){
+  currentForm="ring";
+  for(let i=0;i<particleCount;i++){
+    let a = Math.random()*Math.PI*2;
+    let r = 1;
+    targetForm[i] = new THREE.Vector3(
+      r*Math.cos(a),
+      r*Math.sin(a),
+      0
+    );
+  }
+}
+
+function shape_star(){
+  currentForm="star";
+  for(let i=0;i<particleCount;i++){
+    let a = Math.random()*Math.PI*2;
+    let rr = (i%2===0)?1:0.5;
+    targetForm[i] = new THREE.Vector3(
+      rr*Math.cos(a),
+      rr*Math.sin(a),
+      0
+    );
+  }
+}
+
+function shape_heart(){
+  currentForm="heart";
+  for(let i=0;i<particleCount;i++){
+    let t = Math.random()*Math.PI*2;
+    let x = 0.16*Math.pow(Math.sin(t),3);
+    let y = 0.13*Math.cos(t)-0.05*Math.cos(2*t)-0.02*Math.cos(3*t)-0.01*Math.cos(4*t);
+    targetForm[i]=new THREE.Vector3(x*5,y*5,0);
+  }
+}
+
+function shape_text(){
+  currentForm="text";
+  let cvs=document.createElement("canvas");
+  cvs.width=400; cvs.height=200;
+  let ctx=cvs.getContext("2d");
+  ctx.fillStyle="black";
+  ctx.fillRect(0,0,cvs.width,cvs.height);
+  ctx.fillStyle="white";
+  ctx.font="60px sans-serif";
+  ctx.fillText("我是 MOK",50,120);
+
+  let img=ctx.getImageData(0,0,cvs.width,cvs.height).data;
+  let pts=[];
+  for(let y=0;y<cvs.height;y+=3){
+    for(let x=0;x<cvs.width;x+=3){
+      let idx=(y*cvs.width+x)*4;
+      if(img[idx]>128){
+        pts.push(new THREE.Vector3((x-200)/100,(100-y)/100,0));
+      }
+    }
+  }
+
+  for(let i=0;i<particleCount;i++){
+    let p = pts[i%pts.length];
+    targetForm[i]=new THREE.Vector3(p.x,p.y,p.z);
+  }
+}
+
+/* ============ 手势识别 ============ */
+function onHand(results){
+  if(!results.multiHandLandmarks.length) return;
+
+  let lm=results.multiHandLandmarks[0];
+
+  // palm size for depth scaling
+  let palm = Math.hypot(
+    lm[0].x - lm[9].x,
+    lm[0].y - lm[9].y
+  );
+
+  if(lastPalmSize===0) lastPalmSize=palm;
+  let scale = THREE.MathUtils.lerp(1, 0.5, (palm - lastPalmSize)*5);
+  particleSystem.scale.set(scale,scale,scale);
+
+  // hand speed for storm
+  let now = performance.now();
+  if(now - lastHandTime < 30){
+    for(let i=0;i<particleCount;i++){
+      let idx=i*3;
+      velocities[idx] += (Math.random()-0.5)*0.15;
+      velocities[idx+1] += (Math.random()-0.5)*0.15;
+      velocities[idx+2] += (Math.random()-0.5)*0.15;
+    }
+  }
+  lastHandTime=now;
+
+  /* 五种手势判断（极简版） */
+  let thumb = lm[4].x < lm[3].x; // 大拇指伸直
+  let index = lm[8].y < lm[6].y;
+  let middle = lm[12].y < lm[10].y;
+  let ring = lm[16].y < lm[14].y;
+  let pinky = lm[20].y < lm[18].y;
+
+  if(index && middle && ring && pinky) shape_sphere();            // 张手
+  else if(index && middle && !ring) shape_text();                // 剪刀手
+  else if(!index && !middle && !ring) shape_ring();              // 握拳
+  else if(index && !middle) shape_star();                        // 食指
+  else if(thumb && !index && !middle) shape_heart();             // 大拇指
+}
+
+/* ============ 开始按钮 → 启动摄像头 + 三维 ============ */
+startBtn.onclick = async ()=>{
+  startBtn.style.display="none";
+
+  initThree();
+
+  const hands = new Hands({locateFile:file=>`https://unpkg.com/@mediapipe/hands/${file}`});
+  hands.setOptions({
+    maxNumHands:1,
+    modelComplexity:1,
+    minDetectionConfidence:0.5,
+    minTrackingConfidence:0.5
+  });
+  hands.onResults(onHand);
+
+  const cam = new Camera(video,{
+    onFrame:async ()=>{
+      await hands.send({image:video});
+    },
+    width:1280,
+    height:720
+  });
+  cam.start();
+};
+
+</script>
 </body>
 </html>
