@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WebAR Particle Interaction</title>
+<style>
+  body,html { margin:0; padding:0; overflow:hidden; background:#000; }
+  #video { display:none; }
+  canvas { position:absolute; top:0; left:0; }
+</style>
+</head>
+<body>
+<video id="video" autoplay playsinline></video>
+<canvas id="scene"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+const video = document.getElementById("video");
+navigator.mediaDevices.getUserMedia({ video: true }).then(stream=>{
+  video.srcObject = stream;
+});
+
+// Basic Three.js setup
+const canvas = document.getElementById("scene");
+const renderer = new THREE.WebGLRenderer({ canvas });
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 100);
+camera.position.z = 5;
+
+const geometry = new THREE.BufferGeometry();
+const COUNT = 8000;
+const positions = new Float32Array(COUNT*3);
+for(let i=0;i<COUNT*3;i++) positions[i]=(Math.random()-0.5)*4;
+geometry.setAttribute("position", new THREE.BufferAttribute(positions,3));
+const material = new THREE.PointsMaterial({ size:0.03 });
+const points = new THREE.Points(geometry, material);
+scene.add(points);
+
+function resize(){
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+}
+resize();
+window.onresize = resize;
+
+function render(){
+  requestAnimationFrame(render);
+  renderer.render(scene,camera);
+}
+render();
+</script>
+</body>
+</html>
