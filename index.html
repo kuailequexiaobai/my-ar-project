@@ -1,587 +1,410 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover" />
-<title>WebAR — 炫彩流体粒子</title>
-<!-- Three.js + MediaPipe (unpkg) -->
-<script src="https://unpkg.com/three@0.157.0/build/three.min.js"></script>
-<script src="https://unpkg.com/@mediapipe/hands/hands.js"></script>
-<script src="https://unpkg.com/@mediapipe/camera_utils/camera_utils.js"></script>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AR Particle Morph</title>
+
+<script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
+<script src="https://unpkg.com/three@0.158.0/examples/js/controls/OrbitControls.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
 <style>
-  html,body{height:100%;margin:0;background:#000;color:#fff;overflow:hidden;-webkit-font-smoothing:antialiased;}
-  #three-container{position:fixed;inset:0;z-index:2;touch-action:none;}
-  #video-container{position:fixed;inset:0;z-index:1;transform:scaleX(-1);} /* 镜像方便交互 */
-  #output_video{display:none;width:100%;height:100%;object-fit:cover;}
-  #ui{position:fixed;left:12px;top:12px;z-index:10;background:rgba(0,0,0,0.45);padding:10px;border-radius:10px;font-family:Inter,system-ui,Segoe UI,Roboto,'Noto Sans CJK SC';}
-  .status{font-size:14px;margin:6px 0;padding:6px 8px;background:rgba(255,255,255,0.03);border-radius:6px;}
-  #startBtn{position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg, rgba(0,0,0,0.85), rgba(0,0,0,0.95));cursor:pointer}
-  #startInner{background:linear-gradient(90deg,#00f0ff,#7b30ff);color:#000;padding:18px 26px;border-radius:14px;font-weight:700;font-size:20px;box-shadow:0 8px 30px rgba(123,48,255,0.25);text-align:center}
-  #startInner small{display:block;font-size:12px;color:rgba(0,0,0,0.7);margin-top:4px;}
-  #note{font-size:12px;color:#ccc;margin-top:6px;}
+body {
+  margin: 0;
+  overflow: hidden;
+  background: #000;
+}
+#startBtn{
+  position:fixed;
+  top:0; left:0; right:0; bottom:0;
+  margin:auto;
+  width:200px; height:60px;
+  background:#00baff; color:#fff;
+  border:none; border-radius:14px;
+  font-size:20px;
+}
+#videoElement{
+  position:fixed;
+  left:0; top:0;
+  width:1px; height:1px;
+  opacity:0;
+}
 </style>
 </head>
+
 <body>
-<div id="video-container"><video id="output_video" playsinline autoplay muted></video></div>
-<div id="three-container"></div>
-<div id="ui">
-  <strong>WebAR — 炫彩流体粒子</strong>
-  <div class="status" id="gestureTxt">当前手势: 待机</div>
-  <div class="status" id="depthTxt">深度缩放: 1.00x</div>
-  <div class="status" id="windTxt">挥手风暴: 0.00</div>
-</div>
-<div id="startBtn">
-  <div id="startInner">
-    点击开始 AR
-    <small>允许摄像头后将手放入画面，尝试张手/握拳/剪刀/食指/大拇指</small>
-  </div>
-</div>
-<!-- 离屏 canvas 用于文字采样 -->
-<canvas id="textCanvas" style="display:none;"></canvas>
+
+<button id="startBtn">启动 AR</button>
+<video id="videoElement" autoplay playsinline></video>
+
 <script>
-/* ========== 配置 ========== */
-const PARTICLE_COUNT = 16000; // 16k
-const BASE_SIZE = 14.0; // 基准 size (会按 DPR 调整)
-const MAX_ACCEL = 0.02;
-const DAMPING = 0.96; // 阻尼
-const SPRING_K = 0.006; // 回弹强度
-const EXPLOSION_FRAMES = 60;
+/* ----------------------------------------------------------
+   基础 Three.js 场景
+---------------------------------------------------------- */
+let scene = new THREE.Scene();
+let camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 2000);
+camera.position.set(0,0,400);
 
-/* ========== DOM 引用 ========== */
-const startBtn = document.getElementById('startBtn');
-const outputVideo = document.getElementById('output_video');
-const gestureTxt = document.getElementById('gestureTxt');
-const depthTxt = document.getElementById('depthTxt');
-const windTxt = document.getElementById('windTxt');
+let renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
 
-/* ========== Three.js 变量 ========== */
-let scene, camera, renderer, points;
-let posAttr, colorAttr;
-let geometry, material;
-let lastRAF = performance.now();
+/* ----------------------------------------------------------
+   粒子系统
+---------------------------------------------------------- */
+const COUNT = 16000;
+let geometry = new THREE.BufferGeometry();
+let positions = new Float32Array(COUNT * 3);
+let velocities = new Float32Array(COUNT * 3);
+let targets = new Float32Array(COUNT * 3);
 
-/* 粒子数据 TypedArrays */
-let positions = new Float32Array(PARTICLE_COUNT * 3);
-let velocities = new Float32Array(PARTICLE_COUNT * 3);
-let accelerations = new Float32Array(PARTICLE_COUNT * 3);
-let targetPositions = new Float32Array(PARTICLE_COUNT * 3);
-let colors = new Float32Array(PARTICLE_COUNT * 3);
-
-/* 状态 */
-let currentShape = 'sphere';
-let prevShape = null;
-let explosionTimer = 0;
-let explosionStrength = 0;
-let currentWind = 0;
-let depthScale = 1.0;
-
-/* MediaPipe */
-let hands, mpCamera;
-
-/* 性能提示 & 安全 */
-const useDevicePixelRatio = Math.min(2, window.devicePixelRatio || 1);
-
-/* ========== 工具函数 ========== */
-function rand(min=0, max=1){ return Math.random()*(max-min)+min; }
-function setVec3ToArray(arr, idx3, x,y,z){ arr[idx3]=x; arr[idx3+1]=y; arr[idx3+2]=z; }
-
-/* HSL -> RGB via Three.Color helper */
-function hslToRgb(h,s,l){
-  const c = new THREE.Color();
-  c.setHSL(h,s,l);
-  return c;
+function rand(){
+  return (Math.random()*2 - 1);
 }
 
-/* ========== 初始化 Three.js & 粒子 ========== */
-function initThree(){
-  scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 5000);
-  camera.position.z = 380;
-
-  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  renderer.setPixelRatio(useDevicePixelRatio);
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  document.getElementById('three-container').appendChild(renderer.domElement);
-
-  geometry = new THREE.BufferGeometry();
-
-  // 初始 positions & targets 都随机小球分布
-  for(let i=0, i3=0; i<PARTICLE_COUNT; i++, i3+=3){
-    const r = rand(20, 80);
-    const theta = rand(0, Math.PI*2);
-    const phi = Math.acos(2*rand()-1);
-    const x = r * Math.sin(phi) * Math.cos(theta);
-    const y = r * Math.sin(phi) * Math.sin(theta);
-    const z = r * Math.cos(phi);
-    positions[i3]=x; positions[i3+1]=y; positions[i3+2]=z;
-    targetPositions[i3]=x; targetPositions[i3+1]=y; targetPositions[i3+2]=z;
-
-    // initial color HSL randomish (will be themed)
-    const col = hslToRgb(rand(0,1), 0.85, 0.55);
-    colors[i3]=col.r; colors[i3+1]=col.g; colors[i3+2]=col.b;
-
-    velocities[i3]=velocities[i3+1]=velocities[i3+2]=0;
-    accelerations[i3]=accelerations[i3+1]=accelerations[i3+2]=0;
-  }
-
-  posAttr = new THREE.BufferAttribute(positions, 3);
-  colorAttr = new THREE.BufferAttribute(colors, 3);
-  geometry.setAttribute('position', posAttr);
-  geometry.setAttribute('color', colorAttr);
-
-  material = new THREE.PointsMaterial({
-    size: BASE_SIZE * (1 / useDevicePixelRatio),
-    vertexColors: true,
-    transparent: true,
-    opacity: 0.92,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending
-  });
-
-  points = new THREE.Points(geometry, material);
-  scene.add(points);
-
-  window.addEventListener('resize', onWindowResize, {passive:true});
-  onWindowResize();
+// 初始随机位置
+for(let i=0;i<COUNT;i++){
+  positions[i*3]   = rand()*400;
+  positions[i*3+1] = rand()*400;
+  positions[i*3+2] = rand()*400;
 }
+geometry.setAttribute("position", new THREE.BufferAttribute(positions,3));
 
-/* ========== 窗口调整 ========== */
-function onWindowResize(){
-  if(!camera||!renderer) return;
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-}
+let material = new THREE.PointsMaterial({
+  color:0x55ccff,
+  size:4,
+  transparent:true,
+  opacity:0.9
+});
 
-/* ========== 形状生成函数（将目标位置填入 targetPositions） ========== */
-function generateSphereTargets(){
-  const R = 110;
-  for(let i=0, i3=0; i<PARTICLE_COUNT; i++, i3+=3){
-    const u = Math.random();
-    const v = Math.random();
-    const theta = 2*Math.PI*u;
-    const phi = Math.acos(2*v-1);
-    const r = R*(0.6 + Math.random()*0.4);
-    targetPositions[i3] = r*Math.sin(phi)*Math.cos(theta);
-    targetPositions[i3+1] = r*Math.sin(phi)*Math.sin(theta);
-    targetPositions[i3+2] = r*Math.cos(phi);
+let points = new THREE.Points(geometry, material);
+scene.add(points);
+
+/* ----------------------------------------------------------
+   形状生成器（关键）
+   -> 每种手势都有自己的目标点云
+---------------------------------------------------------- */
+function makeSphere(){
+  for(let i=0;i<COUNT;i++){
+    let r = 120;
+    let u = Math.random();
+    let v = Math.random();
+    let theta = 2 * Math.PI * u;
+    let phi = Math.acos(2*v - 1);
+    let x = r * Math.sin(phi)*Math.cos(theta);
+    let y = r * Math.sin(phi)*Math.sin(theta);
+    let z = r * Math.cos(phi);
+
+    targets[i*3] = x;
+    targets[i*3+1] = y;
+    targets[i*3+2] = z;
   }
 }
 
-function generateTorusTargets(){
-  const R = 95, r = 28;
-  for(let i=0, i3=0; i<PARTICLE_COUNT; i++, i3+=3){
-    const u = Math.random()*Math.PI*2;
-    const v = Math.random()*Math.PI*2;
-    targetPositions[i3] = (R + r*Math.cos(v)) * Math.cos(u);
-    targetPositions[i3+1] = (R + r*Math.cos(v)) * Math.sin(u);
-    targetPositions[i3+2] = r*Math.sin(v);
+function makeTorus(){
+  for(let i=0;i<COUNT;i++){
+    let R = 150, r=40;
+    let u = Math.random()*Math.PI*2;
+    let v = Math.random()*Math.PI*2;
+    let x = (R + r*Math.cos(v))* Math.cos(u);
+    let y = (R + r*Math.cos(v))* Math.sin(u);
+    let z = r * Math.sin(v);
+
+    targets[i*3] = x;
+    targets[i*3+1] = y;
+    targets[i*3+2] = z;
   }
 }
 
-function generateHeartTargets(){
-  const scale = 13;
-  for(let i=0, i3=0; i<PARTICLE_COUNT; i++, i3+=3){
-    const t = Math.random()*Math.PI*2;
-    const x = 16*Math.pow(Math.sin(t),3);
-    const y = 13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t);
-    targetPositions[i3] = x * scale/10 + rand(-4,4);
-    targetPositions[i3+1] = -y * scale/12 + rand(-4,4);
-    targetPositions[i3+2] = rand(-18,18);
+function makeStar(){
+  for(let i=0;i<COUNT;i++){
+    let r1 = 60, r2=150;
+    let a = Math.random()*Math.PI*2;
+    let r = (Math.floor(Math.random()*5)%2===0)? r2:r1;
+    let x = r * Math.cos(a);
+    let y = r * Math.sin(a);
+    let z = (Math.random()*20)-10;
+
+    targets[i*3] = x;
+    targets[i*3+1] = y;
+    targets[i*3+2] = z;
   }
 }
 
-function generateStarTargets(){
-  const outer = 110, inner = 40, pts = 5;
-  const verts = [];
-  for(let i=0;i<pts*2;i++){
-    const r = (i%2===0)?outer:inner;
-    const a = Math.PI/2 + i * Math.PI / pts;
-    verts.push([r*Math.cos(a), r*Math.sin(a)]);
-  }
-  for(let i=0, i3=0;i<PARTICLE_COUNT;i++,i3+=3){
-    const idx = Math.floor(Math.random()*verts.length);
-    const next = (idx+1)%verts.length;
-    const f = Math.random();
-    const x = verts[idx][0] + (verts[next][0]-verts[idx][0])*f + rand(-6,6);
-    const y = verts[idx][1] + (verts[next][1]-verts[idx][1])*f + rand(-6,6);
-    targetPositions[i3] = x;
-    targetPositions[i3+1] = y;
-    targetPositions[i3+2] = rand(-22,22);
+function makeHeart(){
+  for(let i=0;i<COUNT;i++){
+    let t = Math.random()*Math.PI*2;
+    let x = 16*Math.pow(Math.sin(t),3);
+    let y = 13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t);
+    x*=10; y*=10;
+    let z = (Math.random()*30)-15;
+
+    targets[i*3] = x;
+    targets[i*3+1] = y;
+    targets[i*3+2] = z;
   }
 }
 
-function generateTextTargets(){
-  // canvas sampling (optimized step)
-  const canvas = document.getElementById('textCanvas');
-  const ctx = canvas.getContext('2d');
-  const text = '我是 Mok';
-  const fontSize = 220;
-  ctx.font = `${fontSize}px -apple-system, "Noto Sans CJK JP", "PingFang SC", "Microsoft Yahei", sans-serif`;
-  // measure width
-  const w = Math.max(800, Math.ceil(ctx.measureText(text).width));
-  const h = Math.ceil(fontSize * 1.1);
-  canvas.width = w; canvas.height = h;
-  ctx.clearRect(0,0,w,h);
-  ctx.fillStyle = 'white';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.font = `${fontSize}px -apple-system, "Noto Sans CJK JP", "PingFang SC", "Microsoft Yahei", sans-serif`;
-  ctx.fillText(text, w/2, h/2);
+function makeMokText(){
+  for(let i=0;i<COUNT;i++){
+    let x = (Math.random()*300)-150;
+    let y = (Math.random()*120)-60;
+    let z = (Math.random()*20)-10;
 
-  const step = 4; // sampling stride (bigger faster)
-  const data = ctx.getImageData(0,0,w,h).data;
-  const pts = [];
-  for(let y=0;y<h;y+=step){
-    for(let x=0;x<w;x+=step){
-      const idx = (y*w + x)*4;
-      if(data[idx] > 200){
-        // center & scale
-        pts.push([ (x - w/2), (h/2 - y) ]);
-      }
-    }
-  }
-  if(pts.length === 0){
-    generateSphereTargets();
-    return;
-  }
-  const scale = 0.35 * Math.min(500, Math.max(w,h));
-  for(let i=0, i3=0; i<PARTICLE_COUNT; i++, i3+=3){
-    const p = pts[Math.floor(Math.random()*pts.length)];
-    targetPositions[i3] = (p[0] * scale / Math.max(w,h)) + rand(-6,6);
-    targetPositions[i3+1] = (p[1] * scale / Math.max(w,h)) + rand(-6,6);
-    targetPositions[i3+2] = rand(-20,20);
+    targets[i*3] = x;
+    targets[i*3+1] = y;
+    targets[i*3+2] = z;
   }
 }
 
-/* ========== 主题颜色设置 ========== */
-const themeHues = {
-  sphere: 0.55, // blue-green
-  mok_text: 0.78, // purple
-  torus: 0.08, // orange
-  star: 0.12, // gold-ish
-  heart: 0.95 // pink
-};
+/* ----------------------------------------------------------
+   手势 → 形状映射
+---------------------------------------------------------- */
+let currentShape = "sphere";
 
-function applyTheme(name){
-  const baseHue = themeHues[name] ?? 0.6;
-  for(let i=0, i3=0;i<PARTICLE_COUNT;i++,i3+=3){
-    // slight variance per particle
-    const hue = baseHue + (Math.sin(i)*0.01) + rand(-0.02,0.02);
-    const col = hslToRgb((hue % 1 + 1) % 1, 0.92, 0.54);
-    colors[i3]=col.r; colors[i3+1]=col.g; colors[i3+2]=col.b;
-  }
-  colorAttr.needsUpdate = true;
+function switchShape(type){
+  currentShape = type;
+  if(type==="sphere") makeSphere();
+  if(type==="ring") makeTorus();
+  if(type==="star") makeStar();
+  if(type==="heart") makeHeart();
+  if(type==="mok") makeMokText();
 }
 
-/* ========== 切换形状（不爆炸版本 — 流体吸附） ========== */
-function setShape(shape){
-  if(shape === currentShape) return;
+/* ---------- 第二部分开始（直接追加到第一部分后） ---------- */
 
-  prevShape = currentShape;
-  currentShape = shape;
+/////////////////////// 手势与 MediaPipe 初始化 ///////////////////////
+const videoEl = document.getElementById('videoElement');
+const startButton = document.getElementById('startBtn');
 
-  // 直接生成新的目标位置
-  switch(shape){
-    case 'sphere': generateSphereTargets(); break;
-    case 'torus': generateTorusTargets(); break;
-    case 'heart': generateHeartTargets(); break;
-    case 'star': generateStarTargets(); break;
-    case 'mok_text': generateTextTargets(); break;
-    default: generateSphereTargets();
-  }
+let mpHands = null;
+let mpCamera = null;
 
-  // 主题色切换（渐变）
-  applyTheme(
-    shape === 'mok_text'
-      ? 'mok_text'
-      : (shape === 'torus'
-        ? 'torus'
-        : (shape==='heart'
-          ? 'heart'
-          : (shape==='star'
-            ? 'star'
-            : 'sphere')))
-  );
-
-  // 不散开、不爆炸，把粒子速度调至柔和，保证流体效果
-  for(let i=0, i3=0;i<PARTICLE_COUNT;i++,i3+=3){
-    velocities[i3]   *= 0.15;
-    velocities[i3+1] *= 0.15;
-    velocities[i3+2] *= 0.15;
-  }
-
-  // 不再使用爆炸计时器
-  explosionTimer = 0;
-  explosionStrength = 0;
-}
-
-/* ========== 手势识别（基于 MediaPipe landmarks） ========== */
-/* 简化但稳定的判定 + 手速检测 + 手掌占比 (depth) */
+// 上一帧手心中心与时间（用于手速计算）
 let prevHandCenter = null;
 let prevHandTime = null;
+let handWind = 0; // 当前测得的“风力”（由手速驱动）
+let handDepthScale = 1.0; // 由手覆盖面积控制整体缩放
 
-function computeHandMetrics(landmarks){
-  let minX=1,minY=1,maxX=0,maxY=0,cx=0,cy=0;
-  for(let i=0;i<landmarks.length;i++){
-    const p=landmarks[i];
-    cx+=p.x; cy+=p.y;
-    minX=Math.min(minX,p.x); minY=Math.min(minY,p.y);
-    maxX=Math.max(maxX,p.x); maxY=Math.max(maxY,p.y);
-  }
-  cx/=landmarks.length; cy/=landmarks.length;
-  const w = maxX - minX;
-  const h = maxY - minY;
-  return { center:{x:cx,y:cy}, boxW:w, boxH:h, area:w*h };
+// 简单且可靠的手势判定（使用 landmarks 索引）
+function fingerExtended(landmarks, tip, pip){
+  // tip.y < pip.y 表示指尖在上（伸直）。使用微小阈值避免抖动
+  return landmarks[tip].y < landmarks[pip].y - 0.02;
 }
-
-function isFingerExtended(landmarks, tipIdx, pipIdx){
-  return landmarks[tipIdx].y < landmarks[pipIdx].y - 0.02;
-}
-
-function isThumbOut(landmarks){
-  // thumb tip x far from palm center
+function thumbOut(landmarks){
   return Math.abs(landmarks[4].x - landmarks[0].x) > 0.08;
 }
-
-function recognizeGesture(landmarks){
-  if(!landmarks || landmarks.length===0) return 'none';
-  const tips=[4,8,12,16,20], pips=[3,7,11,15,19];
-  const ext = [ isThumbOut(landmarks),
-                isFingerExtended(landmarks,8,7),
-                isFingerExtended(landmarks,12,11),
-                isFingerExtended(landmarks,16,15),
-                isFingerExtended(landmarks,20,19) ];
-  const thumb = ext[0], idx=ext[1], mid=ext[2], ring=ext[3], pink=ext[4];
+function detectGesture(landmarks){
+  if(!landmarks || landmarks.length === 0) return 'none';
+  const tips = [4,8,12,16,20];
+  const pips = [3,7,11,15,19];
+  const idx = fingerExtended(landmarks, tips[1], pips[1]);
+  const mid = fingerExtended(landmarks, tips[2], pips[2]);
+  const ring = fingerExtended(landmarks, tips[3], pips[3]);
+  const pink = fingerExtended(landmarks, tips[4], pips[4]);
+  const thumb = thumbOut(landmarks);
   const extCount = [idx,mid,ring,pink].filter(x=>x).length;
-  if(extCount===4 && thumb) return 'open_palm';
-  if(!thumb && extCount===0) return 'fist';
-  if(thumb && extCount===0) return 'thumbs_up';
+
+  if(extCount === 4 && thumb) return 'open_palm';
+  if(!thumb && extCount === 0) return 'fist';
+  if(thumb && extCount === 0) return 'thumbs_up';
   if(idx && mid && !thumb && !ring && !pink) return 'scissor_hand';
   if(idx && !mid && !thumb) return 'index_finger';
   return 'static';
 }
 
-/* MediaPipe 回调 */
-function onHandsResults(results){
-  if(!results.multiHandLandmarks || results.multiHandLandmarks.length===0){
-    gestureTxt.textContent = '当前手势: 待机 (无手)';
-    windTxt.textContent = `挥手风暴: ${currentWind.toFixed(2)}`;
-    depthScale = THREE.MathUtils.lerp(depthScale, 1.0, 0.06);
-    currentWind = Math.max(0, currentWind * 0.92);
+// 计算手掌中心与包围框（用于深度）
+function handMetrics(landmarks){
+  let minX=1,minY=1,maxX=0,maxY=0, cx=0, cy=0;
+  for(let i=0;i<landmarks.length;i++){
+    const p = landmarks[i];
+    cx += p.x; cy += p.y;
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+  }
+  cx /= landmarks.length; cy /= landmarks.length;
+  return { center:{x:cx, y:cy}, boxW: maxX-minX, boxH: maxY-minY, area: (maxX-minX)*(maxY-minY) };
+}
+
+// MediaPipe 回调
+function onResults(results){
+  if(!results.multiHandLandmarks || results.multiHandLandmarks.length === 0){
+    // 无手：逐渐回落风力与深度
+    handWind = Math.max(0, handWind * 0.94);
+    handDepthScale = THREE.MathUtils.lerp(handDepthScale, 1.0, 0.06);
     return;
   }
+
   const landmarks = results.multiHandLandmarks[0];
-  const metrics = computeHandMetrics(landmarks);
+  const metrics = handMetrics(landmarks);
   const now = performance.now();
 
-  // speed -> wind
+  // 计算手速 -> 风力（px/s -> small scalar）
   if(prevHandCenter && prevHandTime){
     const dx = (metrics.center.x - prevHandCenter.x) * window.innerWidth;
     const dy = (metrics.center.y - prevHandCenter.y) * window.innerHeight;
     const dist = Math.sqrt(dx*dx + dy*dy);
-    const dt = Math.max( (now - prevHandTime)/1000, 1e-6 );
+    const dt = Math.max((now - prevHandTime) / 1000, 1e-6);
     const speed = dist / dt; // px/s
-    const measured = Math.min(10, speed * 0.008); // tune factor
-    currentWind = THREE.MathUtils.lerp(currentWind, measured, 0.25);
-    windTxt.textContent = `挥手风暴: ${currentWind.toFixed(2)}`;
+    const measured = Math.min(8.0, speed * 0.0075);
+    handWind = THREE.MathUtils.lerp(handWind, measured, 0.28);
   }
   prevHandCenter = metrics.center;
   prevHandTime = now;
 
-  // depth scale from box width
-  const screenBoxW = metrics.boxW * window.innerWidth;
-  const ds = THREE.MathUtils.mapLinear(screenBoxW, 80, 380, 0.7, 1.9);
-  depthScale = THREE.MathUtils.lerp(depthScale, THREE.MathUtils.clamp(ds, 0.6, 2.2), 0.08);
-  depthTxt.textContent = `深度缩放: ${depthScale.toFixed(2)}x`;
+  // 深度缩放：通过包围框宽度映射到 0.7 .. 1.9
+  const screenW = metrics.boxW * window.innerWidth;
+  const mapped = THREE.MathUtils.mapLinear(screenW, 80, 380, 0.7, 1.9);
+  handDepthScale = THREE.MathUtils.lerp(handDepthScale, THREE.MathUtils.clamp(mapped, 0.6, 2.2), 0.1);
 
-  // gesture and shape mapping
-  const g = recognizeGesture(landmarks);
-  gestureTxt.textContent = '当前手势: ' + ({
-    open_palm:'张手 (球体)',
-    scissor_hand:'剪刀 (文字)',
-    fist:'握拳 (圆环)',
-    index_finger:'食指 (星)',
-    thumbs_up:'竖大拇指 (爱心)',
-    static:'静止',
-    none:'无手'
-  }[g] || g);
+  // 手势判别 -> 切换形状（平滑吸附）
+  const g = detectGesture(landmarks);
+  if(g === 'open_palm') switchShape('sphere');
+  else if(g === 'scissor_hand') switchShape('mok');
+  else if(g === 'fist') switchShape('ring');
+  else if(g === 'index_finger') switchShape('star');
+  else if(g === 'thumbs_up') switchShape('heart');
 
-  switch(g){
-    case 'open_palm': setShape('sphere'); break;
-    case 'scissor_hand': setShape('mok_text'); break;
-    case 'fist': setShape('torus'); break;
-    case 'index_finger': setShape('star'); break;
-    case 'thumbs_up': setShape('heart'); break;
-    default: /* keep current shape */ break;
-  }
+  // 可选：你可以在这里显示当前手势到页面（console 或 DOM）
+  // console.log('gesture', g);
 }
 
-/* ========== 物理更新（主循环调用） ========== */
-function updatePhysics(dt){
-  // dt in seconds
-  const pos = positions;
-  const vel = velocities;
-  const acc = accelerations;
-  const targ = targetPositions;
-  const wind = currentWind;
-  const N = PARTICLE_COUNT;
-  const spring = SPRING_K;
-
-  // explosion factor
-  const explosionActive = explosionTimer > 0;
-  const expFactor = explosionActive ? (explosionStrength * (explosionTimer / EXPLOSION_FRAMES)) : 0;
-
-  // tight loop, minimize function calls
-  for(let i=0, i3=0; i<N; i++, i3+=3){
-    // spring attraction
-    const tx = targ[i3] * depthScale;
-    const ty = targ[i3+1] * depthScale;
-    const tz = targ[i3+2] * depthScale;
-
-    // compute spring acceleration (toward target)
-    acc[i3] += (tx - pos[i3]) * spring;
-    acc[i3+1] += (ty - pos[i3+1]) * spring;
-    acc[i3+2] += (tz - pos[i3+2]) * spring;
-
-    // explosion radial impulse
-    if(explosionActive){
-      let px = pos[i3], py = pos[i3+1], pz = pos[i3+2];
-      let len = Math.sqrt(px*px + py*py + pz*pz) + 1e-6;
-      acc[i3] += (px/len) * expFactor * 0.9;
-      acc[i3+1] += (py/len) * expFactor * 0.9;
-      acc[i3+2] += (pz/len) * expFactor * 0.9;
-    }
-
-    // wind jitter when strong
-    if(wind > 0.8){
-      acc[i3] += (Math.random()-0.5) * wind * 0.012;
-      acc[i3+1] += (Math.random()-0.5) * wind * 0.012;
-      acc[i3+2] += (Math.random()-0.5) * wind * 0.012;
-    }
-
-    // clamp acceleration
-    acc[i3] = THREE.MathUtils.clamp(acc[i3], -MAX_ACCEL, MAX_ACCEL);
-    acc[i3+1] = THREE.MathUtils.clamp(acc[i3+1], -MAX_ACCEL, MAX_ACCEL);
-    acc[i3+2] = THREE.MathUtils.clamp(acc[i3+2], -MAX_ACCEL, MAX_ACCEL);
-
-    // integrate velocity
-    vel[i3] += acc[i3] * dt;
-    vel[i3+1] += acc[i3+1] * dt;
-    vel[i3+2] += acc[i3+2] * dt;
-
-    // damping
-    vel[i3] *= DAMPING;
-    vel[i3+1] *= DAMPING;
-    vel[i3+2] *= DAMPING;
-
-    // integrate position (scaled so feel snappy)
-    pos[i3] += vel[i3] * dt * 60.0;
-    pos[i3+1] += vel[i3+1] * dt * 60.0;
-    pos[i3+2] += vel[i3+2] * dt * 60.0;
-
-    // reset acceleration
-    acc[i3] = 0; acc[i3+1]=0; acc[i3+2]=0;
-  }
-
-  // write back to attribute buffer
-  posAttr.needsUpdate = true;
-
-  // decay explosion timer & wind
-  if(explosionTimer > 0){
-    explosionTimer--;
-    if(explosionTimer === 0) explosionStrength = 0;
-  }
-  currentWind = Math.max(0, currentWind * 0.995);
-}
-
-/* ========== 渲染主循环 ========== */
-function renderLoop(now){
-  const dt = Math.min(0.05, (now - lastRAF) / 1000);
-  lastRAF = now;
-
-  // physics
-  updatePhysics(dt);
-
-  // visual breathing & hue drift
-  const t = now * 0.00025;
-  // drift colors by slightly rotating hue on CPU (cheap)
-  // rotate small fraction to produce flowing rainbow over time
-  for(let i=0, i3=0;i<PARTICLE_COUNT;i++,i3+=3){
-    // convert current color to HSL via THREE.Color, but that's expensive if per particle each frame
-    // Instead, do a lightening pulse on alpha by material opacity
-  }
-  // animate material opacity/size for breathing
-  material.size = (BASE_SIZE * (1 / useDevicePixelRatio)) * (1.0 + 0.08 * Math.sin(now * 0.0016));
-  material.opacity = 0.76 + 0.14 * Math.sin(now * 0.0022);
-
-  // apply depth scaling as group scale
-  points.scale.setScalar(depthScale);
-
-  renderer.render(scene, camera);
-  requestAnimationFrame(renderLoop);
-}
-
-/* ========== MediaPipe 初始化 ========== */
-function setupMediaPipe(){
-  hands = new Hands({ locateFile: file => `https://unpkg.com/@mediapipe/hands/${file}` });
-  hands.setOptions({
+/* 初始化 MediaPipe */
+function initHands(){
+  mpHands = new Hands({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+  mpHands.setOptions({
     maxNumHands: 1,
     modelComplexity: 1,
     minDetectionConfidence: 0.55,
     minTrackingConfidence: 0.55
   });
-  hands.onResults(onHandsResults);
+  mpHands.onResults(onResults);
 
-  mpCamera = new Camera(outputVideo, {
-    onFrame: async () => { await hands.send({image: outputVideo}); },
+  mpCamera = new Camera(videoEl, {
+    onFrame: async () => { await mpHands.send({image: videoEl}); },
     width: 1280,
     height: 720
   });
-  mpCamera.start();
 }
 
-/* ========== 开始流程（iOS 需要 user gesture） ========== */
-startBtn.addEventListener('click', async () => {
-  startBtn.style.display = 'none';
+/* ---------- 物理：速度+加速度 + 平滑吸附逻辑 ---------- */
+const SPRING = 0.008; // 吸附强度（可调整）
+const MAX_A = 0.03;
+const WIND_MULT = 0.01;
+const DT_SCALE = 60.0; // 提升手感
 
-  // 请求摄像头（确保 user gesture 条件满足）
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
-    outputVideo.srcObject = stream;
-    await outputVideo.play();
-  } catch (e) {
-    alert('无法访问摄像头，请在 Safari/浏览器中允许摄像头权限。错误：' + e.message);
-    console.error(e);
-    startBtn.style.display = ''; // 还原按钮
+function physicsStep(dt){
+  // dt 秒
+  const pos = geometry.getAttribute('position').array;
+  // target array is "targets" defined earlier
+  for(let i=0, i3=0; i<COUNT; i++, i3+=3){
+    // target coordinates
+    const tx = targets[i3], ty = targets[i3+1], tz = targets[i3+2];
+    // current pos
+    let px = pos[i3], py = pos[i3+1], pz = pos[i3+2];
+
+    // spring acceleration toward target (scaled by current hand depthScale)
+    let ax = (tx * handDepthScale - px) * SPRING;
+    let ay = (ty * handDepthScale - py) * SPRING;
+    let az = (tz * handDepthScale - pz) * SPRING;
+
+    // wind: a randomized jitter proportional to handWind (short lived)
+    if(handWind > 0.6){
+      ax += (Math.random() - 0.5) * handWind * WIND_MULT;
+      ay += (Math.random() - 0.5) * handWind * WIND_MULT;
+      az += (Math.random() - 0.5) * handWind * WIND_MULT;
+    }
+
+    // clamp acceleration
+    ax = THREE.MathUtils.clamp(ax, -MAX_A, MAX_A);
+    ay = THREE.MathUtils.clamp(ay, -MAX_A, MAX_A);
+    az = THREE.MathUtils.clamp(az, -MAX_A, MAX_A);
+
+    // integrate velocity
+    velocities[i3] += ax * dt;
+    velocities[i3+1] += ay * dt;
+    velocities[i3+2] += az * dt;
+
+    // viscous damping for fluid feel
+    velocities[i3] *= 0.93;
+    velocities[i3+1] *= 0.93;
+    velocities[i3+2] *= 0.93;
+
+    // integrate position (scale to feel snappier)
+    pos[i3] += velocities[i3] * dt * DT_SCALE;
+    pos[i3+1] += velocities[i3+1] * dt * DT_SCALE;
+    pos[i3+2] += velocities[i3+2] * dt * DT_SCALE;
+
+    // small cohesion: keep particles from drifting too far by a weak centripetal term
+    const cohesion = 0.0005;
+    pos[i3] -= pos[i3] * cohesion * dt * DT_SCALE;
+    pos[i3+1] -= pos[i3+1] * cohesion * dt * DT_SCALE;
+    pos[i3+2] -= pos[i3+2] * cohesion * dt * DT_SCALE;
+  }
+
+  geometry.getAttribute('position').needsUpdate = true;
+
+  // slowly decay handWind
+  handWind *= 0.985;
+}
+
+/* ---------- 渲染循环 ---------- */
+function animate(){
+  requestAnimationFrame(animate);
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - (animate._lastTime||now)) / 1000);
+  animate._lastTime = now;
+
+  physicsStep(dt);
+
+  // subtle material breathing for life
+  material.size = 4 + Math.sin(now * 0.0012) * 1.2;
+  material.opacity = 0.85 + Math.sin(now * 0.0009) * 0.08;
+
+  // scale group by handDepthScale for push/pull
+  points.scale.setScalar(handDepthScale);
+
+  renderer.render(scene, camera);
+}
+
+/* ---------- 启动流程（按钮） ---------- */
+startButton.addEventListener('click', async () => {
+  startButton.style.display = 'none';
+  // 请求摄像头（后退兼容）
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio:false });
+    videoEl.srcObject = stream;
+    await videoEl.play();
+  }catch(e){
+    alert('无法访问摄像头：' + e.message);
+    startButton.style.display = '';
     return;
   }
 
-  // 初始化 three & particles & mediapipe
-  initThree();
-  // ensure buffer attributes are set correctly
-  posAttr = geometry.getAttribute('position');
-  colorAttr = geometry.getAttribute('color');
+  // 初始化 hands & camera
+  initHands();
+  mpCamera.start();
 
-  // copy starting positions into positions array (geometry already filled)
-  // (positions array was used during initialization)
-  // generate initial theme and shape
-  generateSphereTargets();
-  applyTheme('sphere');
-
-  setupMediaPipe();
-
-  lastRAF = performance.now();
-  requestAnimationFrame(renderLoop);
+  // 初始形状（球）
+  makeSphere();
+  // 开始渲染循环
+  animate();
 });
 
-/* ========== 初始 geometry fill（之前 initThree 调用前的保底） ========== */
-/* This is a safe guard in case callers don't call initThree immediately */
-(function prefill(){
-  // fill geometry placeholder so buffer attributes exist if needed early
-  // (we rely on initThree to set final buffers)
-})();
+/* ---------- 页面可见性处理（节能） ---------- */
+document.addEventListener('visibilitychange', () => {
+  if(document.hidden){
+    // pause camera updates if desired
+    if(mpCamera) mpCamera.stop && mpCamera.stop();
+  } else {
+    if(mpCamera) mpCamera.start && mpCamera.start();
+  }
+});
 
-</script>
-</body>
-</html>
+/* ---------- 载入完成提示 ---------- */
+console.log('AR particle morph ready. 点击启动 AR。');
+
+/* ---------- 第二部分结束 ---------- */
