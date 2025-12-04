@@ -274,35 +274,46 @@ function applyTheme(name){
   colorAttr.needsUpdate = true;
 }
 
-/* ========== 切换形状（带爆炸过渡） ========== */
+/* ========== 切换形状（不爆炸版本 — 流体吸附） ========== */
 function setShape(shape){
   if(shape === currentShape) return;
+
   prevShape = currentShape;
   currentShape = shape;
-  // explosion impulse: add radial velocity
-  explosionTimer = EXPLOSION_FRAMES;
-  explosionStrength = 1.0;
-  for(let i=0, i3=0;i<PARTICLE_COUNT;i++,i3+=3){
-    // compute radial outward from center (slightly randomized)
-    const px = positions[i3], py = positions[i3+1], pz = positions[i3+2];
-    let len = Math.sqrt(px*px + py*py + pz*pz) + 1e-6;
-    velocities[i3] += (px/len) * rand(0.6, 2.2) + rand(-0.6,0.6);
-    velocities[i3+1] += (py/len) * rand(0.6, 2.2) + rand(-0.6,0.6);
-    velocities[i3+2] += (pz/len) * rand(0.6, 2.2) + rand(-0.6,0.6);
+
+  // 直接生成新的目标位置
+  switch(shape){
+    case 'sphere': generateSphereTargets(); break;
+    case 'torus': generateTorusTargets(); break;
+    case 'heart': generateHeartTargets(); break;
+    case 'star': generateStarTargets(); break;
+    case 'mok_text': generateTextTargets(); break;
+    default: generateSphereTargets();
   }
 
-  // deferred generate new targets slightly after explosion starts for visual effect
-  setTimeout(()=>{
-    switch(shape){
-      case 'sphere': generateSphereTargets(); break;
-      case 'torus': generateTorusTargets(); break;
-      case 'heart': generateHeartTargets(); break;
-      case 'star': generateStarTargets(); break;
-      case 'mok_text': generateTextTargets(); break;
-      default: generateSphereTargets();
-    }
-    applyTheme(shape === 'mok_text' ? 'mok_text' : (shape === 'torus' ? 'torus' : (shape==='heart'?'heart':(shape==='star'?'star':'sphere'))));
-  }, 90);
+  // 主题色切换（渐变）
+  applyTheme(
+    shape === 'mok_text'
+      ? 'mok_text'
+      : (shape === 'torus'
+        ? 'torus'
+        : (shape==='heart'
+          ? 'heart'
+          : (shape==='star'
+            ? 'star'
+            : 'sphere')))
+  );
+
+  // 不散开、不爆炸，把粒子速度调至柔和，保证流体效果
+  for(let i=0, i3=0;i<PARTICLE_COUNT;i++,i3+=3){
+    velocities[i3]   *= 0.15;
+    velocities[i3+1] *= 0.15;
+    velocities[i3+2] *= 0.15;
+  }
+
+  // 不再使用爆炸计时器
+  explosionTimer = 0;
+  explosionStrength = 0;
 }
 
 /* ========== 手势识别（基于 MediaPipe landmarks） ========== */
